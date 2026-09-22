@@ -9,7 +9,6 @@ function sql(strings, ...values) {
 sql.transaction = promises => Promise.all(promises);
 mock.module('@neondatabase/serverless', { namedExports:{ neon:() => sql } });
 process.env.DATABASE_URL = 'postgres://isolated-test-only';
-process.env.MOONSHOT_SETUP_TOKEN = 'test-only-setup-code-that-is-at-least-32-characters';
 const { default: session } = await import('../api/session.js');
 const { default: workspace } = await import('../api/workspace.js');
 const { default: history } = await import('../api/history.js');
@@ -28,16 +27,18 @@ test('private API lifecycle, persistence, snapshots, conflict checks, CSRF, and 
     assert.equal((await call(workspace,'PUT',{})).status,401);
     assert.equal((await call(history,'GET')).status,401);
   });
-  await t.test('only the setup secret can initialize the private owner', async () => {
-    assert.equal((await call(session,'POST',{action:'setup',password:'a-long-test-password',setupToken:'wrong'})).status,403);
-    const result=await call(session,'POST',{action:'setup',password:'a-long-test-password',setupToken:process.env.MOONSHOT_SETUP_TOKEN});
+  await t.test('username and password create the private owner once', async () => {
+    assert.equal((await call(session,'POST',{action:'setup',username:'short',password:'secret'})).status,400);
+    assert.equal((await call(session,'POST',{action:'setup',username:'moonshot',password:'short'})).status,400);
+    const result=await call(session,'POST',{action:'setup',username:'MoonshotOwner',password:'secret6'});
     assert.equal(result.status,200);
     cookie=result.headers['set-cookie'].split(';')[0];
     assert.match(result.headers['set-cookie'],/HttpOnly/);
-    const rows=await pg.query('SELECT password_hash FROM moonshot_owner');
-    assert.notEqual(rows.rows[0].password_hash,'a-long-test-password');
-    assert.equal(await verifyPassword('a-long-test-password',rows.rows[0].password_hash),true);
-    assert.equal((await call(session,'POST',{action:'setup',password:'replacement-password',setupToken:process.env.MOONSHOT_SETUP_TOKEN})).status,409);
+    const rows=await pg.query('SELECT username, password_hash FROM moonshot_owner');
+    assert.equal(rows.rows[0].username,'moonshotowner');
+    assert.notEqual(rows.rows[0].password_hash,'secret6');
+    assert.equal(await verifyPassword('secret6',rows.rows[0].password_hash),true);
+    assert.equal((await call(session,'POST',{action:'setup',username:'replacement',password:'replace6'})).status,409);
   });
   const packet={key:'day:2026-09-22',data:{journal:{thoughts:'First reflection'}},revision:0,operationId:'operation-test-first-123456'};
   await t.test('cross-site writes are rejected',async()=>{
@@ -66,7 +67,7 @@ test('private API lifecycle, persistence, snapshots, conflict checks, CSRF, and 
   });
   await t.test('wrong-password attempts are rate-limited in the database',async()=>{
     let response;
-    for(let i=0;i<12;i++)response=await call(session,'POST',{action:'login',password:'wrong-but-long-password'});
+    for(let i=0;i<12;i++)response=await call(session,'POST',{action:'login',username:'moonshotowner',password:'wrong6'});
     assert.equal(response.status,429);
   });
 });
