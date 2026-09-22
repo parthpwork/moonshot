@@ -85,7 +85,7 @@ export class SyncStore {
     this.conflicts = {}; this.error = ''; this.checkpoint();
   }
 }
-let store, helpers, activeState, timer, pollBusy = false, legacy = null;
+let store, helpers, activeState, timer, pollBusy = false, legacy = null, activeUserId = '', activeCache = '';
 let initialized = false;
 function gate(title, subtitle, body = '') {
   let root = document.querySelector('#cloud-gate');
@@ -108,22 +108,27 @@ async function authenticate() {
     await new Promise(resolve => root.querySelector('#cloud-retry').onclick = resolve);
     return authenticate();
   }
-  if (response.body.authenticated) return;
-  const setup = response.body.setupRequired;
-  const root = gate(setup ? 'Create your account.' : 'Welcome back.', setup ? 'Choose a username and password to protect your workspace.' : 'Sign in to restore your plans, journals, and progress.', `<form id="cloud-login"><label>Username<input class="input" name="username" type="text" required minlength="6" maxlength="64" autocomplete="username" autocapitalize="none" spellcheck="false"></label><label>${setup?'Create a password':'Password'}<input class="input" name="password" type="password" required minlength="6" maxlength="256" autocomplete="${setup?'new-password':'current-password'}"></label><p class="cloud-help">Username and password must each be at least 6 characters.</p><p class="cloud-error" role="alert"></p><button class="btn primary full" type="submit">${setup?'Create account':'Sign in'}</button></form>`);
-  await new Promise(resolve => {
-    root.querySelector('form').onsubmit = async event => {
-      event.preventDefault();
-      const form = event.currentTarget;
-      const button = form.querySelector('button'); button.disabled = true;
-      try {
-        const data = Object.fromEntries(new FormData(form)); data.action = setup ? 'setup' : 'login';
-        const result = await request('/api/session', { method:'POST', body:JSON.stringify(data) });
-        if (result.status !== 200) throw new Error(result.body.error);
-        form.reset(); resolve();
-      } catch (error) { form.querySelector('.cloud-error').textContent = error.message; }
-      finally { button.disabled = false; }
+  if (response.body.authenticated) return response.body.user;
+  return new Promise(resolve => {
+    let mode = 'login';
+    const draw = () => {
+      const registering = mode === 'register';
+      const root = gate(registering ? 'Create your account.' : 'Welcome back.', registering ? 'Create a private workspace for your own plans and journals.' : 'Sign in to restore your plans, journals, and progress.', `<form id="cloud-login"><label>Username<input class="input" name="username" type="text" required minlength="6" maxlength="64" autocomplete="username" autocapitalize="none" spellcheck="false"></label><label>${registering?'Create a password':'Password'}<input class="input" name="password" type="password" required minlength="6" maxlength="256" autocomplete="${registering?'new-password':'current-password'}"></label><p class="cloud-help">Username and password must each be at least 6 characters.</p><p class="cloud-error" role="alert"></p><button class="btn primary full" type="submit">${registering?'Create account':'Sign in'}</button><button class="cloud-account-switch" type="button">${registering?'Already have an account? Sign in':'New to Moonshot? Create an account'}</button></form>`);
+      root.querySelector('.cloud-account-switch').onclick = () => { mode = registering ? 'login' : 'register'; draw(); };
+      root.querySelector('form').onsubmit = async event => {
+        event.preventDefault();
+        const form = event.currentTarget;
+        const button = form.querySelector('[type="submit"]'); button.disabled = true;
+        try {
+          const data = Object.fromEntries(new FormData(form)); data.action = mode;
+          const result = await request('/api/session', { method:'POST', body:JSON.stringify(data) });
+          if (result.status !== 200) throw new Error(result.body.error);
+          form.reset(); resolve(result.body.user);
+        } catch (error) { form.querySelector('.cloud-error').textContent = error.message; }
+        finally { button.disabled = false; }
+      };
     };
+    draw();
   });
 }
 async function readRemote() {
@@ -155,14 +160,22 @@ function backup(data, suffix) {
 }
 async function openLocked(options) {
   helpers = options;
-  await authenticate();
+  const user = await authenticate();
+  activeUserId = String(user.id);
+  activeCache = `${CACHE}.user.${activeUserId}`;
   gate('Bringing your days back', 'Loading your saved workspace.', '<div class="cloud-spinner"></div>');
-  store = new SyncStore({ request:packet => request('/api/workspace', { method:'PUT', body:JSON.stringify(packet) }), persist:value => localStorage.setItem(CACHE, JSON.stringify(value)), onChange:() => cloud.paint() });
+  try {
+    if (activeUserId === '1' && !localStorage.getItem(activeCache) && localStorage.getItem(CACHE)) {
+      localStorage.setItem(activeCache, localStorage.getItem(CACHE));
+      localStorage.removeItem(CACHE);
+    }
+  } catch {}
+  store = new SyncStore({ request:packet => request('/api/workspace', { method:'PUT', body:JSON.stringify(packet) }), persist:value => localStorage.setItem(activeCache, JSON.stringify(value)), onChange:() => cloud.paint() });
   let badCache = '';
-  try { const raw = localStorage.getItem(CACHE); if (raw) { badCache = raw; store.restore(JSON.parse(raw)); badCache = ''; } } catch { /* Handle recoverable cache below. */ }
+  try { const raw = localStorage.getItem(activeCache); if (raw) { badCache = raw; store.restore(JSON.parse(raw)); badCache = ''; } } catch { /* Handle recoverable cache below. */ }
   if (badCache) {
     const root = gate('A device copy needs attention', 'Download this recovery copy before loading your cloud data. The unreadable copy will remain on this device.', '<button class="btn primary full" id="cloud-recover">Download recovery & continue</button>');
-    await new Promise(resolve => root.querySelector('button').onclick = () => { backup({ raw:badCache }, 'device-recovery'); try { localStorage.setItem(`${CACHE}.recovery`, badCache); } catch {} resolve(); });
+    await new Promise(resolve => root.querySelector('button').onclick = () => { backup({ raw:badCache }, 'device-recovery'); try { localStorage.setItem(`${activeCache}.recovery`, badCache); } catch {} resolve(); });
   }
   while (true) {
     try { store.reconcile(await readRemote()); break; }
@@ -234,7 +247,7 @@ export const cloud = {
       banner.innerHTML = `<span>${escapeHtml(store.cacheError ? 'Device storage is full. Keep this tab open until cloud saving finishes, or download a backup.' : store.error)}</span><button class="btn secondary" id="cloud-export-now">Download backup</button><button class="btn secondary" id="cloud-retry-now">Retry</button>`;
       banner.querySelector('#cloud-export-now').onclick = () => backup(activeState, 'recovery');
       banner.querySelector('#cloud-retry-now').textContent = store.loginRequired ? 'Sign in again' : 'Retry';
-      banner.querySelector('#cloud-retry-now').onclick = async () => { if(store.loginRequired){await authenticate();document.querySelector('#cloud-gate')?.remove();} await store.flush();await poll(); };
+      banner.querySelector('#cloud-retry-now').onclick = async () => { if(store.loginRequired){const user=await authenticate();if(String(user.id)!==activeUserId){location.reload();return;}document.querySelector('#cloud-gate')?.remove();} await store.flush();await poll(); };
     } else if (legacy) {
       banner.innerHTML = '<span>An older Moonshot workspace was found on this device.</span><button class="btn secondary" id="cloud-legacy-export">Download older workspace</button><button class="btn secondary" id="cloud-legacy-hide">Dismiss</button>';
       banner.querySelector('#cloud-legacy-export').onclick = () => backup(legacy, 'previous-device');
@@ -245,7 +258,7 @@ export const cloud = {
     await store.flush();
     if (Object.keys(store.pending).length || store.inFlight || Object.keys(store.conflicts).length) { alert('Wait for cloud saving to finish or resolve the conflict before signing out. Download a backup if the connection is unavailable.'); return; }
     const response = await request('/api/session', { method:'POST', body:JSON.stringify({ action:'logout' }) });
-    if (response.status === 200) { localStorage.removeItem(CACHE); location.reload(); }
+    if (response.status === 200) { localStorage.removeItem(activeCache); location.reload(); }
     else alert(response.body.error || 'Could not sign out.');
   },
   async downloadHistory() {
