@@ -110,10 +110,7 @@ async function authenticate() {
   }
   if (response.body.authenticated) return;
   const setup = response.body.setupRequired;
-  const setupCode = location.hash.startsWith('#setup=') ? location.hash.slice(7) : '';
-  if (setupCode) history.replaceState(null, '', location.pathname);
-  const root = gate(setup ? 'Make this space yours.' : 'Welcome back.', setup ? 'Use your private setup code and choose a password. Only you can open this workspace.' : 'Sign in to restore your plans, journals, and progress.', `<form id="cloud-login">${setup?'<label>Private setup code<input class="input" name="setupToken" type="password" required autocomplete="off"></label>':''}<label>${setup?'Create a password':'Password'}<input class="input" name="password" type="password" required minlength="12" maxlength="256" autocomplete="${setup?'new-password':'current-password'}"></label><p class="cloud-error" role="alert"></p><button class="btn primary full" type="submit">${setup?'Create my workspace':'Open my workspace'}</button></form>`);
-  if (setupCode) root.querySelector('[name="setupToken"]').value = setupCode;
+  const root = gate(setup ? 'Create your account.' : 'Welcome back.', setup ? 'Choose a username and password to protect your workspace.' : 'Sign in to restore your plans, journals, and progress.', `<form id="cloud-login"><label>Username<input class="input" name="username" type="text" required minlength="6" maxlength="64" autocomplete="username" autocapitalize="none" spellcheck="false"></label><label>${setup?'Create a password':'Password'}<input class="input" name="password" type="password" required minlength="6" maxlength="256" autocomplete="${setup?'new-password':'current-password'}"></label><p class="cloud-help">Username and password must each be at least 6 characters.</p><p class="cloud-error" role="alert"></p><button class="btn primary full" type="submit">${setup?'Create account':'Sign in'}</button></form>`);
   await new Promise(resolve => {
     root.querySelector('form').onsubmit = async event => {
       event.preventDefault();
