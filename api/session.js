@@ -1,12 +1,12 @@
 import { db, schema } from '../lib/db.js';
-import { apiHeaders, authorized, body, checkOrigin, digest, hashPassword, newSession, rateLimit, respondError, secretMatches, verifyPassword } from '../lib/security.js';
+import { apiHeaders, authorized, body, checkOrigin, digest, hashPassword, newSession, rateLimit, respondError, verifyPassword } from '../lib/security.js';
 export default async function handler(req, res) {
   apiHeaders(res);
   try {
     await schema();
     if (req.method === 'GET') {
-      const owner = await db()`SELECT id FROM moonshot_owner WHERE id = 1`;
-      return res.json({ authenticated: await authorized(req), setupRequired: !owner.length });
+      const owner = await db()`SELECT id, username FROM moonshot_owner WHERE id = 1`;
+      return res.json({ authenticated: await authorized(req), setupRequired: !owner.length || !owner[0].username });
     }
     if (req.method !== 'POST') return res.status(405).end();
     checkOrigin(req);
@@ -18,16 +18,17 @@ export default async function handler(req, res) {
       return res.json({ ok: true });
     }
     await rateLimit(req);
+    const username = typeof input.username === 'string' ? input.username.trim().toLowerCase() : '';
     const password = input.password;
-    if (typeof password !== 'string' || password.length < 12 || password.length > 256) return res.status(400).json({ error: 'Use a password between 12 and 256 characters.' });
+    if (username.length < 6 || username.length > 64) return res.status(400).json({ error: 'Use a username between 6 and 64 characters.' });
+    if (typeof password !== 'string' || password.length < 6 || password.length > 256) return res.status(400).json({ error: 'Use a password between 6 and 256 characters.' });
     if (input.action === 'setup') {
-      if (!secretMatches(input.setupToken, process.env.MOONSHOT_SETUP_TOKEN)) return res.status(403).json({ error: 'The private setup code is incorrect.' });
       const hash = await hashPassword(password);
-      const inserted = await db()`INSERT INTO moonshot_owner(id, password_hash) VALUES (1, ${hash}) ON CONFLICT DO NOTHING RETURNING id`;
+      const inserted = await db()`INSERT INTO moonshot_owner(id, username, password_hash) VALUES (1, ${username}, ${hash}) ON CONFLICT (id) DO UPDATE SET username = EXCLUDED.username, password_hash = EXCLUDED.password_hash WHERE moonshot_owner.username IS NULL RETURNING id`;
       if (!inserted.length) return res.status(409).json({ error: 'Moonshot is already set up. Sign in instead.' });
     } else if (input.action === 'login') {
-      const owner = await db()`SELECT password_hash FROM moonshot_owner WHERE id = 1`;
-      if (!owner.length || !(await verifyPassword(password, owner[0].password_hash))) return res.status(401).json({ error: 'That password did not match.' });
+      const owner = await db()`SELECT password_hash FROM moonshot_owner WHERE id = 1 AND lower(username) = ${username}`;
+      if (!owner.length || !(await verifyPassword(password, owner[0].password_hash))) return res.status(401).json({ error: 'That username or password did not match.' });
     } else return res.status(400).json({ error: 'Unknown action.' });
     await newSession(res);
     return res.json({ authenticated: true });
